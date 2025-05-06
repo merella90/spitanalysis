@@ -75,7 +75,7 @@ if uploaded_file:
     delta_adr = mean_adr_2025 - mean_adr_2024
 
     if delta_occ < -10:
-        occ_text = f"📉 L'occupazione è in forte calo rispetto al 2024 ({abs(delta_occ):.1f} punti % in meno)."
+        occ_text = f"📉 L'occupazione è in calo rispetto al 2024 ({abs(delta_occ):.1f} punti % in meno)."
     else:
         occ_text = "📊 L'occupazione è relativamente stabile rispetto al 2024."
 
