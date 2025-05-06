@@ -15,7 +15,7 @@ if uploaded_file:
     # Parsing colonne attese
     col_date = st.selectbox("Seleziona la colonna Data", df.columns)
     col_occ_2025 = st.selectbox("Seleziona la colonna Occupazione 2025 (%)", df.columns)
-    col_occ_2024 = st.selectbox("Seleziona la colonna Occupazione 2024 (SPIT) (%)", df.columns)
+    col_occ_diff = st.selectbox("Seleziona la colonna Differenza Occupazione vs SPIT", df.columns)
     col_adr_2025 = st.selectbox("Seleziona la colonna ADR 2025", df.columns)
     col_adr_2024 = st.selectbox("Seleziona la colonna ADR 2024 (SPIT)", df.columns)
 
@@ -24,20 +24,25 @@ if uploaded_file:
     df['Mese'] = df['Data'].dt.strftime('%B')
     df['Giorno'] = df['Data'].dt.day_name()
 
+    # Conversione delle percentuali e calcolo Occupazione 2024 (SPIT)
+    df[col_occ_2025] = df[col_occ_2025].astype(str).str.replace('%', '').str.replace(',', '.').astype(float)
+    df[col_occ_diff] = df[col_occ_diff].astype(float) * 100
+    df['Occupazione 2024 (SPIT)'] = df[col_occ_2025] - df[col_occ_diff]
+
     # Calcolo medie mensili e settimanali
     monthly = df.groupby('Mese').agg({
         col_occ_2025: 'mean',
-        col_occ_2024: 'mean',
+        'Occupazione 2024 (SPIT)': 'mean',
         col_adr_2025: 'mean',
         col_adr_2024: 'mean'
     }).round(1).reset_index()
 
     weekday = df.groupby('Giorno').agg({
         col_occ_2025: 'mean',
-        col_occ_2024: 'mean'
+        'Occupazione 2024 (SPIT)': 'mean'
     }).round(1).reset_index()
 
-    weekday['Delta Occ. (%)'] = (weekday[col_occ_2025] - weekday[col_occ_2024]).round(1)
+    weekday['Delta Occ. (%)'] = (weekday[col_occ_2025] - weekday['Occupazione 2024 (SPIT)']).round(1)
 
     st.subheader("📅 Performance mensile: 2025 vs SPIT 2024")
     st.dataframe(monthly)
@@ -48,7 +53,7 @@ if uploaded_file:
     # Conclusione automatica
     st.subheader("💡 Conclusione automatica")
     mean_occ_2025 = df[col_occ_2025].mean()
-    mean_occ_2024 = df[col_occ_2024].mean()
+    mean_occ_2024 = df['Occupazione 2024 (SPIT)'].mean()
     mean_adr_2025 = df[col_adr_2025].mean()
     mean_adr_2024 = df[col_adr_2024].mean()
 
