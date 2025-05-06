@@ -22,10 +22,12 @@ if uploaded_file:
     df['Data'] = pd.to_datetime(df[col_date], errors='coerce')
     df = df.dropna(subset=['Data'])
     df['Mese'] = df['Data'].dt.strftime('%B')
+    df['Mese'] = pd.Categorical(df['Mese'], categories=["May", "June", "July", "August", "September", "October"], ordered=True)
     df['Giorno'] = df['Data'].dt.day_name()
+    df['Giorno'] = pd.Categorical(df['Giorno'], categories=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], ordered=True)
 
     # Conversione delle percentuali e calcolo Occupazione 2024 (SPIT)
-    df[col_occ_2025] = df[col_occ_2025].astype(str).str.replace('%', '').str.replace(',', '.').astype(float)
+    df[col_occ_2025] = df[col_occ_2025].astype(str).str.replace('%', '').str.replace(',', '.').astype(float) * 100
     df[col_occ_diff] = df[col_occ_diff].astype(float) * 100
     df['Occupazione 2024 (SPIT)'] = df[col_occ_2025] - df[col_occ_diff]
 
@@ -40,12 +42,12 @@ if uploaded_file:
         'Occupazione 2024 (SPIT)': 'mean',
         col_adr_2025: 'mean',
         'ADR 2024 (SPIT)': 'mean'
-    }).reset_index()
+    }).reset_index().sort_values(by='Mese')
 
     weekday = df.groupby('Giorno').agg({
         col_occ_2025: 'mean',
         'Occupazione 2024 (SPIT)': 'mean'
-    }).reset_index()
+    }).reset_index().sort_values(by='Giorno')
 
     weekday['Delta Occ. (%)'] = (weekday[col_occ_2025] - weekday['Occupazione 2024 (SPIT)'])
 
@@ -61,12 +63,11 @@ if uploaded_file:
     st.dataframe(monthly)
 
     st.subheader("📆 Performance per giorno della settimana")
-    st.dataframe(weekday.sort_values(by='Delta Occ. (%)'))
+    st.dataframe(weekday)
 
     # Conclusione automatica
-    st.subheader("💡 Conclusione automatica")
-    mean_occ_2025 = df[col_occ_2025].str.replace('%','').astype(float).mean()
-    mean_occ_2024 = df['Occupazione 2024 (SPIT)'].str.replace('%','').astype(float).mean()
+    mean_occ_2025 = df[col_occ_2025].mean()
+    mean_occ_2024 = df['Occupazione 2024 (SPIT)'].mean()
     mean_adr_2025 = df[col_adr_2025].mean()
     mean_adr_2024 = df['ADR 2024 (SPIT)'].mean()
 
