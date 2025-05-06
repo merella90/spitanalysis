@@ -40,14 +40,22 @@ if uploaded_file:
         'Occupazione 2024 (SPIT)': 'mean',
         col_adr_2025: 'mean',
         'ADR 2024 (SPIT)': 'mean'
-    }).round(1).reset_index()
+    }).reset_index()
 
     weekday = df.groupby('Giorno').agg({
         col_occ_2025: 'mean',
         'Occupazione 2024 (SPIT)': 'mean'
-    }).round(1).reset_index()
+    }).reset_index()
 
-    weekday['Delta Occ. (%)'] = (weekday[col_occ_2025] - weekday['Occupazione 2024 (SPIT)']).round(1)
+    weekday['Delta Occ. (%)'] = (weekday[col_occ_2025] - weekday['Occupazione 2024 (SPIT)'])
+
+    # Formattazione percentuali per la visualizzazione
+    monthly[col_occ_2025] = monthly[col_occ_2025].apply(lambda x: f"{x:.1f}%")
+    monthly['Occupazione 2024 (SPIT)'] = monthly['Occupazione 2024 (SPIT)'].apply(lambda x: f"{x:.1f}%")
+
+    weekday[col_occ_2025] = weekday[col_occ_2025].apply(lambda x: f"{x:.1f}%")
+    weekday['Occupazione 2024 (SPIT)'] = weekday['Occupazione 2024 (SPIT)'].apply(lambda x: f"{x:.1f}%")
+    weekday['Delta Occ. (%)'] = weekday['Delta Occ. (%)'].apply(lambda x: f"{x:.1f}%")
 
     st.subheader("📅 Performance mensile: 2025 vs SPIT 2024")
     st.dataframe(monthly)
@@ -57,8 +65,8 @@ if uploaded_file:
 
     # Conclusione automatica
     st.subheader("💡 Conclusione automatica")
-    mean_occ_2025 = df[col_occ_2025].mean()
-    mean_occ_2024 = df['Occupazione 2024 (SPIT)'].mean()
+    mean_occ_2025 = df[col_occ_2025].str.replace('%','').astype(float).mean()
+    mean_occ_2024 = df['Occupazione 2024 (SPIT)'].str.replace('%','').astype(float).mean()
     mean_adr_2025 = df[col_adr_2025].mean()
     mean_adr_2024 = df['ADR 2024 (SPIT)'].mean()
 
@@ -66,14 +74,14 @@ if uploaded_file:
     delta_adr = mean_adr_2025 - mean_adr_2024
 
     if delta_occ < -10:
-        occ_text = "📉 L'occupazione è in forte calo rispetto al 2024 ({} punti % in meno).".format(round(abs(delta_occ), 1))
+        occ_text = f"📉 L'occupazione è in forte calo rispetto al 2024 ({abs(delta_occ):.1f} punti % in meno)."
     else:
         occ_text = "📊 L'occupazione è relativamente stabile rispetto al 2024."
 
     if delta_adr < 0:
-        adr_text = "💸 L'ADR medio è sceso di circa €{:.2f} rispetto al 2024.".format(abs(delta_adr))
+        adr_text = f"💸 L'ADR medio è sceso di circa €{abs(delta_adr):.2f} rispetto al 2024."
     else:
-        adr_text = "💰 L'ADR medio è aumentato di circa €{:.2f} rispetto al 2024.".format(delta_adr)
+        adr_text = f"💰 L'ADR medio è aumentato di circa €{delta_adr:.2f} rispetto al 2024."
 
     st.markdown(f"**{occ_text}**\n\n**{adr_text}**")
 
