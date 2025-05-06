@@ -19,7 +19,8 @@ if uploaded_file:
     col_adr_2025 = st.selectbox("Seleziona la colonna ADR 2025", df.columns)
     col_adr_2024 = st.selectbox("Seleziona la colonna ADR 2024 (SPIT)", df.columns)
 
-    df['Data'] = pd.to_datetime(df[col_date])
+    df['Data'] = pd.to_datetime(df[col_date], errors='coerce')
+    df = df.dropna(subset=['Data'])
     df['Mese'] = df['Data'].dt.strftime('%B')
     df['Giorno'] = df['Data'].dt.day_name()
 
