@@ -17,7 +17,7 @@ if uploaded_file:
     col_occ_2025 = st.selectbox("Seleziona la colonna Occupazione 2025 (%)", df.columns)
     col_occ_diff = st.selectbox("Seleziona la colonna Differenza Occupazione vs SPIT", df.columns)
     col_adr_2025 = st.selectbox("Seleziona la colonna ADR 2025", df.columns)
-    col_adr_2024 = st.selectbox("Seleziona la colonna ADR 2024 (SPIT)", df.columns)
+    col_adr_diff = st.selectbox("Seleziona la colonna Differenza ADR vs SPIT", df.columns)
 
     df['Data'] = pd.to_datetime(df[col_date], errors='coerce')
     df = df.dropna(subset=['Data'])
@@ -29,12 +29,17 @@ if uploaded_file:
     df[col_occ_diff] = df[col_occ_diff].astype(float) * 100
     df['Occupazione 2024 (SPIT)'] = df[col_occ_2025] - df[col_occ_diff]
 
+    # Conversione ADR e calcolo ADR SPIT
+    df[col_adr_2025] = df[col_adr_2025].astype(str).str.replace(',', '.').astype(float)
+    df[col_adr_diff] = df[col_adr_diff].astype(str).str.replace(',', '.').astype(float)
+    df['ADR 2024 (SPIT)'] = df[col_adr_2025] - df[col_adr_diff]
+
     # Calcolo medie mensili e settimanali
     monthly = df.groupby('Mese').agg({
         col_occ_2025: 'mean',
         'Occupazione 2024 (SPIT)': 'mean',
         col_adr_2025: 'mean',
-        col_adr_2024: 'mean'
+        'ADR 2024 (SPIT)': 'mean'
     }).round(1).reset_index()
 
     weekday = df.groupby('Giorno').agg({
@@ -55,7 +60,7 @@ if uploaded_file:
     mean_occ_2025 = df[col_occ_2025].mean()
     mean_occ_2024 = df['Occupazione 2024 (SPIT)'].mean()
     mean_adr_2025 = df[col_adr_2025].mean()
-    mean_adr_2024 = df[col_adr_2024].mean()
+    mean_adr_2024 = df['ADR 2024 (SPIT)'].mean()
 
     delta_occ = mean_occ_2025 - mean_occ_2024
     delta_adr = mean_adr_2025 - mean_adr_2024
