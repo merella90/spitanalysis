@@ -3,8 +3,8 @@ import pandas as pd
 import numpy as np
 import datetime as dt
 
-st.set_page_config(page_title="Analisi Canali Agoda e WebBeds", layout="wide")
-st.title("📊 Analisi Performance Ca' di Dio & Opportunità Agoda / WebBeds")
+st.set_page_config(page_title="Analisi CDD", layout="wide")
+st.title("📊 Analisi Performance CDD CY VS SPIT")
 
 # Caricamento file dati
 uploaded_file = st.file_uploader("Carica il file Excel con i dati attuali vs SPIT", type=["xlsx"])
