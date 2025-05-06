@@ -87,11 +87,15 @@ if uploaded_file:
     st.markdown(f"**{occ_text}**\n\n**{adr_text}**")
 
     st.markdown("""
-    ### 🔍 Raccomandazione:
-    - Attivare **Agoda** per migliorare visibilità nei mercati asiatici e mobile.
-    - Attivare **WebBeds** per accedere a tour operator e agenzie B2B in Europa.
-    - Monitorare ADR e occupazione per evitare cannibalizzazione.
-    - Mantenere il posizionamento luxury con disponibilità e tariffe coerenti.
+    ### 🔍 Raccomandazione aggiornata su Agoda
+    - Forte presenza nel mercato asiatico e mobile-first.
+    - Appartiene al gruppo Booking Holdings → affidabile e integrabile.
+    - ⚠️ Da monitorare le politiche di cancellazione e il supporto clienti.
+
+    ### 🔍 Raccomandazione aggiornata su WebBeds
+    - Ideale per il canale B2B (agenzie e tour operator).
+    - Offre strumenti avanzati come Parity Monitor e rete globale.
+    - ⚠️ Richiede integrazione tecnica e non è visibile direttamente ai consumer finali.
     """)
 
 else:
