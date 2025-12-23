@@ -88,32 +88,33 @@ def optimize_weights_grid_search(baseline, year_prev, otb, actual_rn, actual_adr
     return best_weights, best_mape_rn, best_mape_adr
 
 def calculate_forecast_simple(baseline, year_prev, otb, pickup, weights, biennale_adj, num_rooms, year_ago=None):
-    """Forecast con 4 o 5 componenti (year-ago opzionale)"""
+    """
+    Forecast con 4 o 5 componenti.
     
-    # Roomnights
+    IMPORTANTE: Biennale Adjustment applicato SOLO alla componente Year (Architettura),
+    perché Baseline è già Arte e OTB/Pickup riflettono domanda attuale Arte.
+    """
+    
+    # Roomnights - Adjustment SOLO su Year
     rn = (
         baseline['rn'] * weights['baseline'] +
-        year_prev['rn'] * weights['year'] +
+        year_prev['rn'] * weights['year'] * biennale_adj +  # ← Adjustment qui!
         otb['rn'] * weights['otb'] +
         pickup['rn'] * weights['pickup']
     )
     
-    # ADR  
+    # ADR - Adjustment SOLO su Year
     adr = (
         baseline['adr'] * weights['baseline'] +
-        year_prev['adr'] * weights['year'] +
+        year_prev['adr'] * weights['year'] * biennale_adj +  # ← Adjustment qui!
         otb['adr'] * weights['otb'] +
         pickup['adr'] * weights['pickup']
     )
     
-    # Year-Ago (5° componente opzionale)
+    # Year-Ago (5° componente opzionale) - NO adjustment
     if year_ago is not None and 'year_ago' in weights:
         rn += year_ago['rn'] * weights['year_ago']
         adr += year_ago['adr'] * weights['year_ago']
-    
-    # Applica Biennale Adjustment
-    rn *= biennale_adj
-    adr *= biennale_adj
     
     return {
         'rn': rn,
@@ -525,11 +526,15 @@ if biennale_mode == "Manual":
 else:  # Auto Grid Search
     with st.spinner("🔄 Calcolo automatico Biennale Adjustment..."):
         
-        # Dati per calcolo
-        # Baseline 2023-24 = Biennale ARTE (target da raggiungere)
-        # Year 2024-25 = Biennale ARCHITETTURA (punto di partenza)
+        # LOGICA CORRETTA:
+        # Il forecast usa un MIX di Arte (35%) + Architettura (25%)
+        # Il Biennale Adjustment shifta questo mix verso Arte (>1.0) o Architettura (<1.0)
         
-        # Gennaio come periodo di validazione (più stabile di dicembre/febbraio)
+        # Dati per calcolo
+        # Baseline 2023-24 = Biennale ARTE (componente Arte del forecast)
+        # Year 2024-25 = Biennale ARCHITETTURA (componente Architettura del forecast)
+        
+        # Gennaio come periodo di validazione
         baseline_arte_gen = {
             'rn': data['baseline_2324'].iloc[32:63]['Room nights'].sum(),
             'adr': data['baseline_2324'].iloc[32:63]['ADR Cam'].mean()
@@ -540,20 +545,34 @@ else:  # Auto Grid Search
             'adr': data['year_2425'].iloc[31:62]['ADR Cam'].mean()
         }
         
-        # Grid search: testa fattori da 1.00 a 1.30
+        # Calcola "forecast base" = mix pesato dei due componenti principali
+        # Baseline ha peso 35%, Year ha peso 25% sul totale
+        # Sul mix di questi due: Baseline = 35/60 = 58.3%, Year = 25/60 = 41.7%
+        peso_baseline_norm = 0.35 / (0.35 + 0.25)  # 58.3%
+        peso_year_norm = 0.25 / (0.35 + 0.25)      # 41.7%
+        
+        forecast_base_gen = {
+            'rn': baseline_arte_gen['rn'] * peso_baseline_norm + year_arch_gen['rn'] * peso_year_norm,
+            'adr': baseline_arte_gen['adr'] * peso_baseline_norm + year_arch_gen['adr'] * peso_year_norm
+        }
+        
+        # Target = Arte 2024 reale (vogliamo che il forecast adjusted si avvicini a questo)
+        target_gen = baseline_arte_gen
+        
+        # Grid search: quale factor applicato al forecast_base lo avvicina al target Arte?
         best_factor = 1.10
         best_mape_combined = float('inf')
         
         results = []
         
-        for factor in np.arange(1.00, 1.31, 0.02):  # Step 0.02 per velocità
-            # Forecast: Architettura × Factor = Arte previsto
-            forecast_rn = year_arch_gen['rn'] * factor
-            forecast_adr = year_arch_gen['adr'] * factor
+        for factor in np.arange(0.90, 1.31, 0.02):  # Range 0.90-1.30
+            # Forecast adjusted = forecast_base × factor
+            forecast_rn = forecast_base_gen['rn'] * factor
+            forecast_adr = forecast_base_gen['adr'] * factor
             
-            # MAPE vs Arte reale
-            mape_rn = abs(forecast_rn - baseline_arte_gen['rn']) / baseline_arte_gen['rn'] * 100
-            mape_adr = abs(forecast_adr - baseline_arte_gen['adr']) / baseline_arte_gen['adr'] * 100
+            # MAPE vs Arte reale (target)
+            mape_rn = abs(forecast_rn - target_gen['rn']) / target_gen['rn'] * 100
+            mape_adr = abs(forecast_adr - target_gen['adr']) / target_gen['adr'] * 100
             
             # Combined MAPE (peso uguale)
             combined_mape = (mape_rn + mape_adr) / 2
@@ -579,17 +598,32 @@ else:  # Auto Grid Search
         
         with st.sidebar.expander("📊 Dettagli Calcolo"):
             st.write(f"**Validation: Gennaio**")
-            st.write(f"Arte 2024 (target): {baseline_arte_gen['rn']:.0f} RN, €{baseline_arte_gen['adr']:.2f} ADR")
-            st.write(f"Architettura 2025: {year_arch_gen['rn']:.0f} RN, €{year_arch_gen['adr']:.2f} ADR")
             st.write(f"")
-            st.write(f"**Performance con fattore {biennale_adj:.2f}:**")
+            st.write(f"**Componenti Forecast Base:**")
+            st.write(f"Arte 2024: {baseline_arte_gen['rn']:.0f} RN, €{baseline_arte_gen['adr']:.2f} (peso 35%)")
+            st.write(f"Architettura 2025: {year_arch_gen['rn']:.0f} RN, €{year_arch_gen['adr']:.2f} (peso 25%)")
+            st.write(f"")
+            st.write(f"**Forecast Base (mix 58% Arte + 42% Architettura):**")
+            st.write(f"{forecast_base_gen['rn']:.0f} RN, €{forecast_base_gen['adr']:.2f}")
+            st.write(f"")
+            st.write(f"**Target (Arte 2024 reale):**")
+            st.write(f"{target_gen['rn']:.0f} RN, €{target_gen['adr']:.2f}")
+            st.write(f"")
+            st.write(f"**Con fattore {biennale_adj:.2f}:**")
+            st.write(f"Forecast: {forecast_base_gen['rn']*biennale_adj:.0f} RN, €{forecast_base_gen['adr']*biennale_adj:.2f}")
             st.write(f"MAPE RN: {best_mape_rn:.2f}%")
             st.write(f"MAPE ADR: {best_mape_adr:.2f}%")
             st.write(f"MAPE Combined: {best_mape_combined:.2f}%")
             st.write(f"")
             st.write(f"**Interpretazione:**")
-            diff_pct = (biennale_adj - 1) * 100
-            st.write(f"Biennale Arte storicamente supera Architettura di **+{diff_pct:.1f}%**")
+            if biennale_adj > 1.0:
+                diff_pct = (biennale_adj - 1) * 100
+                st.write(f"Shifta il forecast del **+{diff_pct:.1f}%** verso il pattern Arte puro")
+            elif biennale_adj < 1.0:
+                diff_pct = (1 - biennale_adj) * 100
+                st.write(f"Shifta il forecast del **-{diff_pct:.1f}%** verso il pattern Architettura")
+            else:
+                st.write(f"Il mix base (58% Arte, 42% Architettura) è già ottimale")
 
 # ============================================================================
 # CALCOLI FORECAST CON DATA DINAMICA
