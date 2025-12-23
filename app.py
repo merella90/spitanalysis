@@ -112,17 +112,49 @@ def calculate_forecast_simple(baseline, year_prev, otb, pickup, weights, biennal
     }
 
 def identify_file_type(file):
+    """Identifica il tipo di file in modo flessibile"""
     name = file.name.lower()
-    if 'baseline' in name or '150120' in name:
+    
+    # Baseline 2023-2024 (Biennale Arte)
+    baseline_patterns = [
+        'baseline', '2023-24', '2023-2024', '202324', 
+        '2023_24', '2023.24', '150120', 'biennale', 'arte'
+    ]
+    if any(pattern in name for pattern in baseline_patterns):
         return 'baseline_2324'
-    elif 'year' in name or '150108' in name:
+    
+    # Year 2024-2025 (Inflazione)
+    year_patterns = [
+        'year', '2024-25', '2024-2025', '202425', 
+        '2024_25', '2024.25', '150108', 'inflazione', 'inflation'
+    ]
+    if any(pattern in name for pattern in year_patterns):
         return 'year_2425'
-    elif 'otb' in name or '145405' in name:
+    
+    # OTB 2026
+    otb_patterns = [
+        'otb', '2026', '145405', 'on the books', 
+        'onthebooks', 'prenotazioni'
+    ]
+    if any(pattern in name for pattern in otb_patterns):
         return 'otb_2026'
-    elif 'pickup' in name or '144853' in name:
+    
+    # Pickup 7gg
+    pickup_patterns = [
+        'pickup', '7gg', '7 gg', 'seven', '144853', 
+        '145722', 'booking velocity', 'velocity'
+    ]
+    if any(pattern in name for pattern in pickup_patterns):
         return 'pickup'
-    elif 'budget' in name or '105652' in name:
+    
+    # Budget
+    budget_patterns = [
+        'budget', 'bdg', '105652', 'budgeted', 
+        'performance', 'target'
+    ]
+    if any(pattern in name for pattern in budget_patterns):
         return 'budget'
+    
     return None
 
 @st.cache_data
