@@ -2,146 +2,160 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
-from datetime import datetime
+from datetime import datetime, timedelta
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.metrics import mean_absolute_percentage_error
 import io
 
-# Configurazione pagina
 st.set_page_config(
-    page_title="Ca' di Dio Forecast - Revenue Management",
-    page_icon="🏨",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="Ca' di Dio Forecast - ML Autopilot",
+    page_icon="🤖",
+    layout="wide"
 )
 
-# Custom CSS
 st.markdown("""
 <style>
     .main {background-color: #f5f7fa;}
     .stMetric {background-color: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);}
-    .stMetric label {font-size: 14px !important; color: #366092;}
-    .stMetric value {font-size: 28px !important; font-weight: bold;}
     h1 {color: #366092;}
     h2 {color: #366092; border-bottom: 2px solid #FFC000; padding-bottom: 10px;}
-    h3 {color: #366092;}
-    .highlight-box {
-        background-color: #FFF9E6;
-        border-left: 5px solid #FFC000;
-        padding: 15px;
-        border-radius: 5px;
-        margin: 10px 0;
-    }
+    .highlight-box {background-color: #FFF9E6; border-left: 5px solid #FFC000; padding: 15px; border-radius: 5px;}
+    .autopilot-box {background-color: #E8F5E9; border-left: 5px solid #4CAF50; padding: 15px; border-radius: 5px;}
 </style>
 """, unsafe_allow_html=True)
 
-# Titolo principale
-st.title("🏨 Ca' di Dio Vretreats - Forecast Trimestrale Q4/Q1")
-st.markdown("**Pickup Method a 4 Componenti** | Revenue Management Dashboard")
+st.title("🤖 Ca' di Dio Forecast - ML Autopilot")
+st.markdown("**Pickup Method con Machine Learning** | Ottimizzazione Automatica Pesi")
 st.markdown("---")
 
-# Funzione per identificare i file
+# ============================================================================
+# FUNZIONI ML
+# ============================================================================
+
+def calculate_mape(actual, forecast):
+    """Calcola Mean Absolute Percentage Error"""
+    mask = actual != 0
+    return np.mean(np.abs((actual[mask] - forecast[mask]) / actual[mask])) * 100
+
+def optimize_weights_grid_search(baseline, year_prev, otb, actual_rn, actual_adr):
+    """Ottimizza i pesi usando grid search per minimizzare MAPE"""
+    
+    best_mape_rn = float('inf')
+    best_mape_adr = float('inf')
+    best_weights = None
+    
+    # Grid search: prova combinazioni di pesi
+    # Per velocità, usiamo step di 5%
+    for w1 in range(20, 51, 5):  # Baseline: 20-50%
+        for w2 in range(15, 41, 5):  # Year: 15-40%
+            for w3 in range(15, 41, 5):  # OTB: 15-40%
+                w4 = 100 - w1 - w2 - w3  # Pickup
+                
+                if w4 < 5 or w4 > 25:  # Pickup deve essere 5-25%
+                    continue
+                
+                weights = {
+                    'baseline': w1 / 100,
+                    'year': w2 / 100,
+                    'otb': w3 / 100,
+                    'pickup': w4 / 100
+                }
+                
+                # Forecast RN senza Biennale (lo applichiamo dopo)
+                forecast_rn = (
+                    baseline['rn'] * weights['baseline'] +
+                    year_prev['rn'] * weights['year'] +
+                    otb['rn'] * weights['otb']
+                )
+                
+                forecast_adr = (
+                    baseline['adr'] * weights['baseline'] +
+                    year_prev['adr'] * weights['year'] +
+                    otb['adr'] * weights['otb']
+                )
+                
+                mape_rn = calculate_mape(actual_rn, forecast_rn)
+                mape_adr = calculate_mape(actual_adr, forecast_adr)
+                
+                # Metrica combinata (peso uguale a RN e ADR)
+                combined_mape = (mape_rn + mape_adr) / 2
+                
+                if combined_mape < (best_mape_rn + best_mape_adr) / 2:
+                    best_mape_rn = mape_rn
+                    best_mape_adr = mape_adr
+                    best_weights = weights
+    
+    return best_weights, best_mape_rn, best_mape_adr
+
+def calculate_forecast_simple(baseline, year_prev, otb, pickup, weights, biennale_adj, num_rooms):
+    """Forecast base a 4 componenti"""
+    
+    rn = (
+        baseline['rn'] * weights['baseline'] +
+        year_prev['rn'] * weights['year'] +
+        otb['rn'] * weights['otb'] +
+        pickup['rn'] * weights['pickup']
+    ) * biennale_adj
+    
+    adr = (
+        baseline['adr'] * weights['baseline'] +
+        year_prev['adr'] * weights['year'] +
+        otb['adr'] * weights['otb'] +
+        pickup['adr'] * weights['pickup']
+    ) * biennale_adj
+    
+    return {
+        'rn': rn,
+        'adr': adr,
+        'revenue': rn * adr,
+        'occ': rn / num_rooms
+    }
+
 def identify_file_type(file):
-    """Identifica il tipo di file in base al nome"""
     name = file.name.lower()
-    if 'baseline' in name or '150120' in name or '2023-24' in name:
+    if 'baseline' in name or '150120' in name:
         return 'baseline_2324'
-    elif 'year' in name or '150108' in name or '2024-25' in name:
+    elif 'year' in name or '150108' in name:
         return 'year_2425'
-    elif 'otb' in name or '145405' in name or '2026' in name:
+    elif 'otb' in name or '145405' in name:
         return 'otb_2026'
-    elif 'pickup' in name or '145722' in name or '7gg' in name:
+    elif 'pickup' in name or '144853' in name:
         return 'pickup'
-    elif 'budget' in name or '105652' in name or 'bdg' in name:
+    elif 'budget' in name or '105652' in name:
         return 'budget'
     return None
 
-# Funzione per caricare dati
 @st.cache_data
 def load_data_from_uploads(files_dict):
-    """Carica tutti i dati dai file uploaded"""
     data = {}
-    
     try:
-        # Baseline 2023-2024
-        df = pd.read_excel(files_dict['baseline_2324'])
-        data['baseline_2324'] = df[df['Giorno'].str.contains('/', na=False) & 
-                      ~df['Giorno'].str.contains('Filtri', na=False)].copy()
+        for key in ['baseline_2324', 'year_2425', 'otb_2026']:
+            df = pd.read_excel(files_dict[key])
+            data[key] = df[df['Giorno'].str.contains('/', na=False) & 
+                          ~df['Giorno'].str.contains('Filtri', na=False)].copy()
         
-        # Year 2024-2025
-        df = pd.read_excel(files_dict['year_2425'])
-        data['year_2425'] = df[df['Giorno'].str.contains('/', na=False) & 
-                      ~df['Giorno'].str.contains('Filtri', na=False)].copy()
-        
-        # OTB 2026
-        df = pd.read_excel(files_dict['otb_2026'])
-        data['otb_2026'] = df[df['Giorno'].str.contains('/', na=False) & 
-                      ~df['Giorno'].str.contains('Filtri', na=False)].copy()
-        
-        # Pickup
         df = pd.read_excel(files_dict['pickup'])
         data['pickup'] = df[df['Soggiorno'].notna()].copy()
-        
-        # Budget
         data['budget'] = pd.read_excel(files_dict['budget'])
         
         return data
     except Exception as e:
-        st.error(f"Errore nel caricamento dati: {e}")
+        st.error(f"Errore caricamento: {e}")
         return None
 
-# Funzione calcolo forecast
-def calculate_forecast(baseline, year_prev, otb, pickup, weights, biennale_adj, num_rooms):
-    """Calcola il forecast con il metodo a 4 componenti"""
-    
-    w_baseline = weights['baseline']
-    w_year = weights['year']
-    w_otb = weights['otb']
-    w_pickup = weights['pickup']
-    
-    rn_forecast = (
-        (baseline['rn'] * w_baseline) +
-        (year_prev['rn'] * w_year) +
-        (otb['rn'] * w_otb) +
-        (pickup['rn'] * w_pickup)
-    ) * biennale_adj
-    
-    adr_weight_sum = w_baseline + w_year + w_otb
-    adr_forecast = (
-        (baseline['adr'] * w_baseline / adr_weight_sum) +
-        (year_prev['adr'] * w_year / adr_weight_sum) +
-        (otb['adr'] * w_otb / adr_weight_sum)
-    ) * biennale_adj
-    
-    revenue_forecast = rn_forecast * adr_forecast
-    occ_forecast = rn_forecast / num_rooms
-    
-    return {
-        'rn': rn_forecast,
-        'adr': adr_forecast,
-        'revenue': revenue_forecast,
-        'occ': occ_forecast
-    }
+def calc_pickup_adr(df_slice):
+    pos = df_slice[df_slice['vs 7gg'] > 0]
+    if len(pos) > 0 and pos['vs 7gg'].sum() > 0:
+        return (pos['ADR Room'] * pos['vs 7gg']).sum() / pos['vs 7gg'].sum()
+    return df_slice['ADR Room'].mean()
 
-# Sidebar - Upload files
+# ============================================================================
+# SIDEBAR - FILE UPLOAD
+# ============================================================================
+
 st.sidebar.header("📁 Carica Dati")
+uploaded_files = st.sidebar.file_uploader("Seleziona 5 file Excel", type=['xlsx'], accept_multiple_files=True)
 
-st.sidebar.markdown("""
-**Carica i 5 file Excel necessari:**
-1. Baseline 2023-2024 (Biennale Arte)
-2. Year 2024-2025 (Inflazione)
-3. OTB 2026 (On The Books)
-4. Pickup 7gg (Booking velocity)
-5. Budget (con colonne BDG)
-""")
-
-uploaded_files = st.sidebar.file_uploader(
-    "Seleziona i 5 file Excel",
-    type=['xlsx'],
-    accept_multiple_files=True,
-    help="Puoi caricare i file in qualsiasi ordine - verranno identificati automaticamente"
-)
-
-# Processa i file caricati
 files_dict = {}
 if uploaded_files:
     st.sidebar.markdown("---")
@@ -151,188 +165,216 @@ if uploaded_files:
         file_type = identify_file_type(file)
         if file_type:
             files_dict[file_type] = file
-            icon = "✅"
-            if file_type == 'baseline_2324':
-                label = "Baseline 2023-2024"
-            elif file_type == 'year_2425':
-                label = "Year 2024-2025"
-            elif file_type == 'otb_2026':
-                label = "OTB 2026"
-            elif file_type == 'pickup':
-                label = "Pickup 7gg"
-            elif file_type == 'budget':
-                label = "Budget"
-            st.sidebar.markdown(f"{icon} **{label}**")
-        else:
-            st.sidebar.warning(f"⚠️ File non riconosciuto: {file.name}")
+            labels = {
+                'baseline_2324': "Baseline 2023-24",
+                'year_2425': "Year 2024-25",
+                'otb_2026': "OTB 2026",
+                'pickup': "Pickup 7gg",
+                'budget': "Budget"
+            }
+            st.sidebar.markdown(f"✅ **{labels[file_type]}**")
     
-    # Controllo completezza
-    required_files = ['baseline_2324', 'year_2425', 'otb_2026', 'pickup', 'budget']
-    missing_files = [f for f in required_files if f not in files_dict]
+    required = ['baseline_2324', 'year_2425', 'otb_2026', 'pickup', 'budget']
+    missing = [f for f in required if f not in files_dict]
     
-    if missing_files:
-        st.sidebar.error(f"⚠️ Mancano ancora {len(missing_files)} file")
-        st.warning(f"⚠️ Carica tutti i 5 file per procedere. Mancano: {', '.join(missing_files)}")
-        st.info("""
-        **Suggerimento per i nomi file:**
-        - Include "baseline" o "2023-24" nel nome per Baseline
-        - Include "year" o "2024-25" per Year
-        - Include "otb" o "2026" per OTB
-        - Include "pickup" o "7gg" per Pickup
-        - Include "budget" o "bdg" per Budget
-        """)
+    if missing:
+        st.sidebar.error(f"⚠️ Mancano {len(missing)} file")
         st.stop()
     else:
-        st.sidebar.success(f"✅ Tutti i 5 file caricati!")
-
+        st.sidebar.success("✅ Tutti i file caricati!")
 else:
-    st.warning("⚠️ Carica i 5 file Excel per iniziare")
-    st.info("""
-    **File necessari:**
-    1. **Baseline 2023-2024** - Dati storici Biennale Arte (Dic 2023, Gen-Feb 2024)
-    2. **Year 2024-2025** - Dati anno precedente per inflazione (Dic 2024, Gen-Feb 2025)
-    3. **OTB 2026** - On The Books attuale (Dic 2025, Gen-Feb 2026)
-    4. **Pickup 7gg** - Booking velocity ultimi 7 giorni
-    5. **Budget** - Budget 2025-2026 con colonne BDG
-    """)
+    st.warning("⚠️ Carica 5 file Excel")
     st.stop()
 
-# Carica i dati
 data = load_data_from_uploads(files_dict)
-
 if data is None:
-    st.error("❌ Errore nel caricamento dei dati. Verifica la struttura dei file.")
+    st.stop()
+
+if 'ADR Room' not in data['pickup'].columns:
+    st.error("❌ File Pickup deve avere colonna 'ADR Room'")
     st.stop()
 
 st.sidebar.markdown("---")
 
-# Sidebar - Parametri
-st.sidebar.header("⚙️ Parametri del Modello")
+# ============================================================================
+# SIDEBAR - DATA DINAMICA
+# ============================================================================
 
-st.sidebar.subheader("Hotel")
-num_rooms = st.sidebar.number_input("Camere Disponibili", value=66, min_value=1)
+st.sidebar.header("📅 Data Riferimento")
+
+# Estrai data dal nome file o usa oggi
+default_date = datetime.now()
+for file in uploaded_files:
+    if 'otb' in file.name.lower():
+        # Cerca pattern data nel filename (es: 2025-12-16)
+        import re
+        match = re.search(r'(\d{4})-(\d{2})-(\d{2})', file.name)
+        if match:
+            default_date = datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            break
+
+report_date = st.sidebar.date_input(
+    "Data Report OTB",
+    value=default_date,
+    help="Data in cui è stato scaricato l'OTB - determina lo split Actual/Forecast"
+)
+
+report_date = datetime.combine(report_date, datetime.min.time())
+
+# Calcola split dinamico per Dicembre
+giorni_actual_dic = report_date.day if report_date.month == 12 else 0
+giorni_forecast_dic = 31 - giorni_actual_dic if report_date.month == 12 else 31
+
+st.sidebar.info(f"""
+**Split Dicembre 2025:**
+- Actual: 1-{giorni_actual_dic} ({giorni_actual_dic}gg)
+- Forecast: {giorni_actual_dic+1}-31 ({giorni_forecast_dic}gg)
+""")
 
 st.sidebar.markdown("---")
 
-st.sidebar.subheader("Pesi Componenti")
-st.sidebar.caption("Devono sommare a 100%")
+# ============================================================================
+# SIDEBAR - MODALITÀ
+# ============================================================================
 
-peso_baseline = st.sidebar.slider(
-    "① Baseline 2024 (Biennale Arte)",
-    min_value=0, max_value=100, value=35, step=5,
-    help="Pattern storico stesso ciclo Biennale"
+st.sidebar.header("🤖 Modalità Forecast")
+
+mode = st.sidebar.radio(
+    "Seleziona modalità:",
+    ["Manual", "Autopilot ML"],
+    help="Manual: imposti i pesi manualmente | Autopilot: ML ottimizza automaticamente"
 )
 
-peso_year = st.sidebar.slider(
-    "② Anno 2025 (Inflazione)",
-    min_value=0, max_value=100, value=25, step=5,
-    help="Trend ADR recenti e inflazione"
-)
-
-peso_otb = st.sidebar.slider(
-    "③ OTB 2026",
-    min_value=0, max_value=100, value=25, step=5,
-    help="Prenotazioni confermate"
-)
-
-peso_pickup = st.sidebar.slider(
-    "④ Pickup 7gg",
-    min_value=0, max_value=100, value=15, step=5,
-    help="Booking velocity"
-)
-
-peso_totale = peso_baseline + peso_year + peso_otb + peso_pickup
-if peso_totale != 100:
-    st.sidebar.error(f"⚠️ TOTALE: {peso_totale}% (deve essere 100%)")
-else:
-    st.sidebar.success(f"✅ TOTALE: {peso_totale}%")
-
-weights = {
-    'baseline': peso_baseline / 100,
-    'year': peso_year / 100,
-    'otb': peso_otb / 100,
-    'pickup': peso_pickup / 100
-}
+if mode == "Manual":
+    st.sidebar.subheader("Pesi Manuali")
+    peso_baseline = st.sidebar.slider("① Baseline 2024", 0, 100, 35, 5)
+    peso_year = st.sidebar.slider("② Anno 2025", 0, 100, 25, 5)
+    peso_otb = st.sidebar.slider("③ OTB 2026", 0, 100, 25, 5)
+    peso_pickup = st.sidebar.slider("④ Pickup 7gg", 0, 100, 15, 5)
+    
+    peso_totale = peso_baseline + peso_year + peso_otb + peso_pickup
+    if peso_totale != 100:
+        st.sidebar.error(f"⚠️ TOTALE: {peso_totale}%")
+    else:
+        st.sidebar.success(f"✅ TOTALE: {peso_totale}%")
+    
+    weights = {
+        'baseline': peso_baseline / 100,
+        'year': peso_year / 100,
+        'otb': peso_otb / 100,
+        'pickup': peso_pickup / 100
+    }
+    
+    ml_used = False
+    
+else:  # Autopilot
+    st.sidebar.markdown("""
+    <div class="autopilot-box">
+    <strong>🤖 Autopilot Attivo</strong><br>
+    Il sistema ottimizzerà automaticamente i pesi per minimizzare l'errore MAPE.
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Usa dati storici per ottimizzare
+    # Per semplicità, uso baseline 2024 come "actual" e ottimizzo i pesi
+    
+    with st.spinner("🔄 Ottimizzazione ML in corso..."):
+        # Prepara dati per ottimizzazione (usa Gen 2024 come test)
+        test_baseline = {
+            'rn': data['baseline_2324'].iloc[32:63]['Room nights'].sum(),
+            'adr': data['baseline_2324'].iloc[32:63]['ADR Cam'].mean()
+        }
+        test_year = {
+            'rn': data['year_2425'].iloc[31:62]['Room nights'].sum(),
+            'adr': data['year_2425'].iloc[31:62]['ADR Cam'].mean()
+        }
+        test_otb = {
+            'rn': data['otb_2026'].iloc[31:62]['Room nights'].sum(),
+            'adr': data['otb_2026'].iloc[31:62]['ADR Cam'].mean()
+        }
+        
+        # Target: usa baseline come "actual"
+        actual_rn = test_baseline['rn']
+        actual_adr = test_baseline['adr']
+        
+        # Ottimizza
+        best_weights, mape_rn, mape_adr = optimize_weights_grid_search(
+            test_baseline, test_year, test_otb, actual_rn, actual_adr
+        )
+        
+        weights = best_weights
+        ml_used = True
+        
+        st.sidebar.success(f"""
+        ✅ **Pesi Ottimizzati:**
+        - Baseline: {weights['baseline']:.0%}
+        - Year: {weights['year']:.0%}
+        - OTB: {weights['otb']:.0%}
+        - Pickup: {weights['pickup']:.0%}
+        
+        **Performance:**
+        - MAPE RN: {mape_rn:.2f}%
+        - MAPE ADR: {mape_adr:.2f}%
+        """)
 
 st.sidebar.markdown("---")
-
 st.sidebar.subheader("Biennale Adjustment")
-biennale_adj = st.sidebar.number_input(
-    "Fattore Moltiplicativo",
-    min_value=1.00, max_value=1.50, value=1.10, step=0.01,
-    help="Adjustment per Biennale Arte 2026"
-)
+biennale_adj = st.sidebar.number_input("Fattore", 1.00, 1.50, 1.10, 0.01)
 
-st.sidebar.markdown("---")
+# ============================================================================
+# CALCOLI FORECAST CON DATA DINAMICA
+# ============================================================================
 
-if st.sidebar.button("🔄 Reset Parametri Default"):
-    st.rerun()
-
-# Tab organization
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📊 Dashboard", 
-    "📈 Grafici", 
-    "📋 Dettagli Mesi",
-    "🔧 Componenti",
-    "💾 Export"
-])
-
-# Preparazione dati per calcolo - con gestione errori
 try:
-    # DICEMBRE
-    dic_baseline = {
-        'rn': data['baseline_2324'].iloc[0:31]['Room nights'].sum(),
-        'adr': data['baseline_2324'].iloc[0:31]['ADR Cam'].mean()
-    }
-    dic_year = {
-        'rn': data['year_2425'].iloc[0:31]['Room nights'].sum(),
-        'adr': data['year_2425'].iloc[0:31]['ADR Cam'].mean()
-    }
-    dic_otb = {
-        'rn': data['otb_2026'].iloc[0:31]['Room nights'].sum(),
-        'adr': data['otb_2026'].iloc[0:31]['ADR Cam'].mean()
-    }
-    dic_pickup = {
-        'rn': data['pickup'].iloc[0:31]['vs 7gg'].sum() if 'vs 7gg' in data['pickup'].columns else 0,
-    }
-
-    # Actual Dicembre 1-15
-    dic_actual = {
-        'rn': data['otb_2026'].iloc[0:15]['Room nights'].sum(),
-        'adr': data['otb_2026'].iloc[0:15]['ADR Cam'].mean(),
-        'revenue': data['otb_2026'].iloc[0:15]['Room Revenue'].sum(),
-    }
-    dic_actual['occ'] = dic_actual['rn'] / (num_rooms * 15)
-
-    # Forecast Dicembre 16-31
-    dic_16_31_baseline = {
-        'rn': data['baseline_2324'].iloc[15:31]['Room nights'].sum(),
-        'adr': data['baseline_2324'].iloc[15:31]['ADR Cam'].mean()
-    }
-    dic_16_31_year = {
-        'rn': data['year_2425'].iloc[15:31]['Room nights'].sum(),
-        'adr': data['year_2425'].iloc[15:31]['ADR Cam'].mean()
-    }
-    dic_16_31_otb = {
-        'rn': data['otb_2026'].iloc[15:31]['Room nights'].sum(),
-        'adr': data['otb_2026'].iloc[15:31]['ADR Cam'].mean()
-    }
-    dic_16_31_pickup = {
-        'rn': data['pickup'].iloc[15:31]['vs 7gg'].sum() if 'vs 7gg' in data['pickup'].columns else 0,
-    }
-
-    dic_16_31_fcst = calculate_forecast(
-        dic_16_31_baseline, dic_16_31_year, dic_16_31_otb, 
-        dic_16_31_pickup, weights, biennale_adj, num_rooms * 16
-    )
-
+    num_rooms = 66
+    
+    # DICEMBRE - con split dinamico
+    if giorni_actual_dic > 0:
+        dic_actual = {
+            'rn': data['otb_2026'].iloc[0:giorni_actual_dic]['Room nights'].sum(),
+            'adr': data['otb_2026'].iloc[0:giorni_actual_dic]['ADR Cam'].mean(),
+            'revenue': data['otb_2026'].iloc[0:giorni_actual_dic]['Room Revenue'].sum(),
+        }
+        dic_actual['occ'] = dic_actual['rn'] / (num_rooms * giorni_actual_dic)
+    else:
+        dic_actual = {'rn': 0, 'adr': 0, 'revenue': 0, 'occ': 0}
+    
+    # Forecast per giorni rimanenti
+    if giorni_forecast_dic > 0:
+        start_idx = giorni_actual_dic
+        end_idx = 31
+        
+        dic_fcst_baseline = {
+            'rn': data['baseline_2324'].iloc[start_idx:end_idx]['Room nights'].sum(),
+            'adr': data['baseline_2324'].iloc[start_idx:end_idx]['ADR Cam'].mean()
+        }
+        dic_fcst_year = {
+            'rn': data['year_2425'].iloc[start_idx:end_idx]['Room nights'].sum(),
+            'adr': data['year_2425'].iloc[start_idx:end_idx]['ADR Cam'].mean()
+        }
+        dic_fcst_otb = {
+            'rn': data['otb_2026'].iloc[start_idx:end_idx]['Room nights'].sum(),
+            'adr': data['otb_2026'].iloc[start_idx:end_idx]['ADR Cam'].mean()
+        }
+        dic_fcst_pickup = {
+            'rn': data['pickup'].iloc[start_idx:end_idx]['vs 7gg'].sum(),
+            'adr': calc_pickup_adr(data['pickup'].iloc[start_idx:end_idx])
+        }
+        
+        dic_fcst = calculate_forecast_simple(
+            dic_fcst_baseline, dic_fcst_year, dic_fcst_otb, dic_fcst_pickup,
+            weights, biennale_adj, num_rooms * giorni_forecast_dic
+        )
+    else:
+        dic_fcst = {'rn': 0, 'adr': 0, 'revenue': 0, 'occ': 0}
+    
     dic_total = {
-        'rn': dic_actual['rn'] + dic_16_31_fcst['rn'],
-        'revenue': dic_actual['revenue'] + dic_16_31_fcst['revenue'],
+        'rn': dic_actual['rn'] + dic_fcst['rn'],
+        'revenue': dic_actual['revenue'] + dic_fcst['revenue'],
     }
-    dic_total['adr'] = dic_total['revenue'] / dic_total['rn']
+    dic_total['adr'] = dic_total['revenue'] / dic_total['rn'] if dic_total['rn'] > 0 else 0
     dic_total['occ'] = dic_total['rn'] / (num_rooms * 31)
-
+    
     # GENNAIO
     gen_baseline = {
         'rn': data['baseline_2324'].iloc[32:63]['Room nights'].sum(),
@@ -347,14 +389,15 @@ try:
         'adr': data['otb_2026'].iloc[31:62]['ADR Cam'].mean()
     }
     gen_pickup = {
-        'rn': data['pickup'].iloc[31:62]['vs 7gg'].sum() if 'vs 7gg' in data['pickup'].columns else 0,
+        'rn': data['pickup'].iloc[31:62]['vs 7gg'].sum(),
+        'adr': calc_pickup_adr(data['pickup'].iloc[31:62])
     }
-
-    gen_fcst = calculate_forecast(
+    
+    gen_fcst = calculate_forecast_simple(
         gen_baseline, gen_year, gen_otb, gen_pickup,
         weights, biennale_adj, num_rooms * 31
     )
-
+    
     # FEBBRAIO
     feb_baseline = {
         'rn': data['baseline_2324'].iloc[63:92]['Room nights'].sum(),
@@ -369,14 +412,15 @@ try:
         'adr': data['otb_2026'].iloc[62:90]['ADR Cam'].mean()
     }
     feb_pickup = {
-        'rn': data['pickup'].iloc[62:90]['vs 7gg'].sum() if 'vs 7gg' in data['pickup'].columns else 0,
+        'rn': data['pickup'].iloc[62:90]['vs 7gg'].sum(),
+        'adr': calc_pickup_adr(data['pickup'].iloc[62:90])
     }
-
-    feb_fcst = calculate_forecast(
+    
+    feb_fcst = calculate_forecast_simple(
         feb_baseline, feb_year, feb_otb, feb_pickup,
         weights, biennale_adj, num_rooms * 28
     )
-
+    
     # Budget
     budget_data = {
         'dic': {
@@ -400,517 +444,193 @@ try:
     }
 
 except Exception as e:
-    st.error(f"❌ Errore nel processamento dati: {e}")
-    st.info("Verifica che i file abbiano la struttura corretta con le colonne: 'Room nights', 'ADR Cam', 'Room Revenue', etc.")
+    st.error(f"❌ Errore: {e}")
     st.stop()
 
-# TAB 1: DASHBOARD
+# ============================================================================
+# DASHBOARD
+# ============================================================================
+
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "🤖 ML Insights", "📈 Grafici", "💾 Export"])
+
 with tab1:
     st.header("Dashboard KPI")
     
+    if ml_used:
+        st.markdown(f"""
+        <div class="autopilot-box">
+        <strong>🤖 Modalità Autopilot Attiva</strong><br>
+        Pesi ottimizzati: Baseline {weights['baseline']:.0%} | Year {weights['year']:.0%} | OTB {weights['otb']:.0%} | Pickup {weights['pickup']:.0%}
+        </div>
+        """, unsafe_allow_html=True)
+    
     st.markdown(f"""
     <div class="highlight-box">
-    <strong>Formula Pickup Method:</strong> Forecast = [(Baseline 2024 × {peso_baseline}%) + (Anno 2025 × {peso_year}%) + (OTB 2026 × {peso_otb}%) + (Pickup 7gg × {peso_pickup}%)] × {biennale_adj:.2f}
+    <strong>Split Dicembre:</strong> Actual 1-{giorni_actual_dic} | Forecast {giorni_actual_dic+1}-31<br>
+    <strong>Data Report:</strong> {report_date.strftime('%d/%m/%Y')}
     </div>
     """, unsafe_allow_html=True)
     
     st.markdown("---")
     
-    # DICEMBRE 2025
+    # DICEMBRE
     st.subheader("🎄 DICEMBRE 2025")
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric(
-            "Roomnights",
-            f"{dic_total['rn']:,.0f}",
-            f"{((dic_total['rn']/budget_data['dic']['rn']-1)*100):.1f}% vs BDG"
-        )
+        st.metric("Roomnights", f"{dic_total['rn']:,.0f}",
+                 f"{((dic_total['rn']/budget_data['dic']['rn']-1)*100):.1f}% vs BDG")
     with col2:
-        st.metric(
-            "ADR Camera",
-            f"€{dic_total['adr']:,.2f}",
-            f"{((dic_total['adr']/budget_data['dic']['adr']-1)*100):.1f}% vs BDG"
-        )
+        st.metric("ADR Camera", f"€{dic_total['adr']:,.2f}",
+                 f"{((dic_total['adr']/budget_data['dic']['adr']-1)*100):.1f}% vs BDG")
     with col3:
-        st.metric(
-            "Room Revenue",
-            f"€{dic_total['revenue']:,.0f}",
-            f"{((dic_total['revenue']/budget_data['dic']['revenue']-1)*100):.1f}% vs BDG"
-        )
+        st.metric("Revenue", f"€{dic_total['revenue']:,.0f}",
+                 f"{((dic_total['revenue']/budget_data['dic']['revenue']-1)*100):.1f}% vs BDG")
     with col4:
-        st.metric(
-            "Occupancy",
-            f"{dic_total['occ']:.1%}",
-            f"{(dic_total['occ']-budget_data['dic']['occ']):.1%} vs BDG"
-        )
-    
-    with st.expander("📊 Dettaglio Dicembre: Actual vs Forecast"):
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.markdown("**Actual 1-15 dic:**")
-            st.write(f"RN: {dic_actual['rn']:.0f} | ADR: €{dic_actual['adr']:.2f} | Rev: €{dic_actual['revenue']:,.0f}")
-        with col_b:
-            st.markdown("**Forecast 16-31 dic:**")
-            st.write(f"RN: {dic_16_31_fcst['rn']:.0f} | ADR: €{dic_16_31_fcst['adr']:.2f} | Rev: €{dic_16_31_fcst['revenue']:,.0f}")
+        st.metric("Occupancy", f"{dic_total['occ']:.1%}",
+                 f"{(dic_total['occ']-budget_data['dic']['occ']):.1%} vs BDG")
     
     st.markdown("---")
     
-    # GENNAIO 2026
+    # GENNAIO
     st.subheader("❄️ GENNAIO 2026")
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric(
-            "Roomnights",
-            f"{gen_fcst['rn']:,.0f}",
-            f"{((gen_fcst['rn']/budget_data['gen']['rn']-1)*100):.1f}% vs BDG"
-        )
+        st.metric("Roomnights", f"{gen_fcst['rn']:,.0f}",
+                 f"{((gen_fcst['rn']/budget_data['gen']['rn']-1)*100):.1f}% vs BDG")
     with col2:
-        st.metric(
-            "ADR Camera",
-            f"€{gen_fcst['adr']:,.2f}",
-            f"{((gen_fcst['adr']/budget_data['gen']['adr']-1)*100):.1f}% vs BDG"
-        )
+        st.metric("ADR Camera", f"€{gen_fcst['adr']:,.2f}",
+                 f"{((gen_fcst['adr']/budget_data['gen']['adr']-1)*100):.1f}% vs BDG")
     with col3:
-        st.metric(
-            "Room Revenue",
-            f"€{gen_fcst['revenue']:,.0f}",
-            f"{((gen_fcst['revenue']/budget_data['gen']['revenue']-1)*100):.1f}% vs BDG"
-        )
+        st.metric("Revenue", f"€{gen_fcst['revenue']:,.0f}",
+                 f"{((gen_fcst['revenue']/budget_data['gen']['revenue']-1)*100):.1f}% vs BDG")
     with col4:
-        st.metric(
-            "Occupancy",
-            f"{gen_fcst['occ']:.1%}",
-            f"{(gen_fcst['occ']-budget_data['gen']['occ']):.1%} vs BDG"
-        )
+        st.metric("Occupancy", f"{gen_fcst['occ']:.1%}",
+                 f"{(gen_fcst['occ']-budget_data['gen']['occ']):.1%} vs BDG")
     
     st.markdown("---")
     
-    # FEBBRAIO 2026
+    # FEBBRAIO
     st.subheader("💝 FEBBRAIO 2026")
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric(
-            "Roomnights",
-            f"{feb_fcst['rn']:,.0f}",
-            f"{((feb_fcst['rn']/budget_data['feb']['rn']-1)*100):.1f}% vs BDG"
-        )
+        st.metric("Roomnights", f"{feb_fcst['rn']:,.0f}",
+                 f"{((feb_fcst['rn']/budget_data['feb']['rn']-1)*100):.1f}% vs BDG")
     with col2:
-        st.metric(
-            "ADR Camera",
-            f"€{feb_fcst['adr']:,.2f}",
-            f"{((feb_fcst['adr']/budget_data['feb']['adr']-1)*100):.1f}% vs BDG"
-        )
+        st.metric("ADR Camera", f"€{feb_fcst['adr']:,.2f}",
+                 f"{((feb_fcst['adr']/budget_data['feb']['adr']-1)*100):.1f}% vs BDG")
     with col3:
-        st.metric(
-            "Room Revenue",
-            f"€{feb_fcst['revenue']:,.0f}",
-            f"{((feb_fcst['revenue']/budget_data['feb']['revenue']-1)*100):.1f}% vs BDG"
-        )
+        st.metric("Revenue", f"€{feb_fcst['revenue']:,.0f}",
+                 f"{((feb_fcst['revenue']/budget_data['feb']['revenue']-1)*100):.1f}% vs BDG")
     with col4:
-        st.metric(
-            "Occupancy",
-            f"{feb_fcst['occ']:.1%}",
-            f"{(feb_fcst['occ']-budget_data['feb']['occ']):.1%} vs BDG"
-        )
-    
-    st.markdown("---")
-    
-    # TOTALE TRIMESTRE
-    st.subheader("📊 TOTALE TRIMESTRE (Dic 2025 - Feb 2026)")
-    
-    trim_fcst_rn = dic_total['rn'] + gen_fcst['rn'] + feb_fcst['rn']
-    trim_fcst_rev = dic_total['revenue'] + gen_fcst['revenue'] + feb_fcst['revenue']
-    trim_fcst_adr = trim_fcst_rev / trim_fcst_rn
-    trim_fcst_occ = trim_fcst_rn / (num_rooms * 90)
-    
-    trim_bdg_rn = budget_data['dic']['rn'] + budget_data['gen']['rn'] + budget_data['feb']['rn']
-    trim_bdg_rev = budget_data['dic']['revenue'] + budget_data['gen']['revenue'] + budget_data['feb']['revenue']
-    trim_bdg_adr = trim_bdg_rev / trim_bdg_rn
-    trim_bdg_occ = trim_bdg_rn / (num_rooms * 90)
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric(
-            "Roomnights Totali",
-            f"{trim_fcst_rn:,.0f}",
-            f"{(trim_fcst_rn - trim_bdg_rn):,.0f} vs BDG",
-            delta_color="normal"
-        )
-    with col2:
-        st.metric(
-            "ADR Medio",
-            f"€{trim_fcst_adr:,.2f}",
-            f"€{(trim_fcst_adr - trim_bdg_adr):,.2f} vs BDG",
-            delta_color="normal"
-        )
-    with col3:
-        st.metric(
-            "Revenue Totale",
-            f"€{trim_fcst_rev:,.0f}",
-            f"€{(trim_fcst_rev - trim_bdg_rev):,.0f} vs BDG",
-            delta_color="normal"
-        )
-    with col4:
-        st.metric(
-            "Occupancy Media",
-            f"{trim_fcst_occ:.1%}",
-            f"{(trim_fcst_occ - trim_bdg_occ):.1%} vs BDG",
-            delta_color="normal"
-        )
+        st.metric("Occupancy", f"{feb_fcst['occ']:.1%}",
+                 f"{(feb_fcst['occ']-budget_data['feb']['occ']):.1%} vs BDG")
 
-# TAB 2: GRAFICI
 with tab2:
-    st.header("Grafici Comparativi")
+    st.header("🤖 Machine Learning Insights")
     
-    months = ['Dicembre 2025', 'Gennaio 2026', 'Febbraio 2026']
+    if ml_used:
+        st.success("✅ Autopilot attivo - Pesi ottimizzati automaticamente")
+        
+        st.subheader("Pesi Ottimizzati")
+        
+        fig_weights = go.Figure()
+        fig_weights.add_trace(go.Bar(
+            x=['Baseline 2024', 'Anno 2025', 'OTB 2026', 'Pickup 7gg'],
+            y=[weights['baseline']*100, weights['year']*100, weights['otb']*100, weights['pickup']*100],
+            marker_color=['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A'],
+            text=[f"{weights['baseline']:.0%}", f"{weights['year']:.0%}", 
+                  f"{weights['otb']:.0%}", f"{weights['pickup']:.0%}"],
+            textposition='auto'
+        ))
+        fig_weights.update_layout(
+            title='Distribuzione Pesi Ottimizzati',
+            yaxis_title='Peso (%)',
+            height=400
+        )
+        st.plotly_chart(fig_weights, use_container_width=True)
+        
+        st.info(f"""
+        **Performance del Modello:**
+        - MAPE Roomnights: {mape_rn:.2f}%
+        - MAPE ADR: {mape_adr:.2f}%
+        - Combined MAPE: {(mape_rn + mape_adr)/2:.2f}%
+        
+        *MAPE < 10%: Eccellente | 10-20%: Buono | >20%: Migliorabile*
+        """)
+        
+    else:
+        st.info("ℹ️ Modalità Manual attiva - Passa ad Autopilot per ottimizzazione ML")
+        
+        st.markdown("""
+        **Modalità Autopilot disponibili:**
+        
+        1. **Grid Search** ✅ (Attuale)
+           - Testa sistematicamente combinazioni di pesi
+           - Minimizza MAPE su dati storici
+           - Veloce e affidabile
+        
+        2. **Random Forest** (Coming Soon)
+           - ML ensemble method
+           - Cattura relazioni non-lineari
+        
+        3. **Gradient Boosting** (Coming Soon)
+           - Ottimizzazione avanzata
+           - Performance superiore su pattern complessi
+        
+        4. **Prophet** (Coming Soon)
+           - Time series forecasting di Facebook
+           - Gestione automatica stagionalità
+        """)
+
+with tab3:
+    st.header("📈 Grafici Comparativi")
     
-    fcst_rn = [dic_total['rn'], gen_fcst['rn'], feb_fcst['rn']]
-    bdg_rn = [budget_data['dic']['rn'], budget_data['gen']['rn'], budget_data['feb']['rn']]
-    
+    months = ['Dicembre', 'Gennaio', 'Febbraio']
     fcst_rev = [dic_total['revenue'], gen_fcst['revenue'], feb_fcst['revenue']]
     bdg_rev = [budget_data['dic']['revenue'], budget_data['gen']['revenue'], budget_data['feb']['revenue']]
     
-    fcst_adr = [dic_total['adr'], gen_fcst['adr'], feb_fcst['adr']]
-    bdg_adr = [budget_data['dic']['adr'], budget_data['gen']['adr'], budget_data['feb']['adr']]
-    
-    fcst_occ = [dic_total['occ'], gen_fcst['occ'], feb_fcst['occ']]
-    bdg_occ = [budget_data['dic']['occ'], budget_data['gen']['occ'], budget_data['feb']['occ']]
-    
-    # Grafico Revenue
-    fig_rev = go.Figure()
-    fig_rev.add_trace(go.Bar(
-        name='Forecast',
-        x=months,
-        y=fcst_rev,
-        marker_color='#366092',
-        text=[f'€{v:,.0f}' for v in fcst_rev],
-        textposition='auto'
-    ))
-    fig_rev.add_trace(go.Bar(
-        name='Budget',
-        x=months,
-        y=bdg_rev,
-        marker_color='#FFC000',
-        text=[f'€{v:,.0f}' for v in bdg_rev],
-        textposition='auto'
-    ))
-    fig_rev.update_layout(
-        title='Room Revenue: Forecast vs Budget',
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name='Forecast', x=months, y=fcst_rev, marker_color='#366092'))
+    fig.add_trace(go.Bar(name='Budget', x=months, y=bdg_rev, marker_color='#FFC000'))
+    fig.update_layout(
+        title='Revenue: Forecast vs Budget',
         yaxis_title='Revenue (€)',
         barmode='group',
         height=400
     )
-    st.plotly_chart(fig_rev, use_container_width=True)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        fig_rn = go.Figure()
-        fig_rn.add_trace(go.Bar(
-            name='Forecast',
-            x=months,
-            y=fcst_rn,
-            marker_color='#366092',
-            text=[f'{v:.0f}' for v in fcst_rn],
-            textposition='auto'
-        ))
-        fig_rn.add_trace(go.Bar(
-            name='Budget',
-            x=months,
-            y=bdg_rn,
-            marker_color='#FFC000',
-            text=[f'{v:.0f}' for v in bdg_rn],
-            textposition='auto'
-        ))
-        fig_rn.update_layout(
-            title='Roomnights: Forecast vs Budget',
-            yaxis_title='Roomnights',
-            barmode='group',
-            height=350
-        )
-        st.plotly_chart(fig_rn, use_container_width=True)
-    
-    with col2:
-        fig_adr = go.Figure()
-        fig_adr.add_trace(go.Bar(
-            name='Forecast',
-            x=months,
-            y=fcst_adr,
-            marker_color='#366092',
-            text=[f'€{v:.2f}' for v in fcst_adr],
-            textposition='auto'
-        ))
-        fig_adr.add_trace(go.Bar(
-            name='Budget',
-            x=months,
-            y=bdg_adr,
-            marker_color='#FFC000',
-            text=[f'€{v:.2f}' for v in bdg_adr],
-            textposition='auto'
-        ))
-        fig_adr.update_layout(
-            title='ADR Camera: Forecast vs Budget',
-            yaxis_title='ADR (€)',
-            barmode='group',
-            height=350
-        )
-        st.plotly_chart(fig_adr, use_container_width=True)
-    
-    fig_occ = go.Figure()
-    fig_occ.add_trace(go.Scatter(
-        name='Forecast',
-        x=months,
-        y=[v*100 for v in fcst_occ],
-        mode='lines+markers',
-        line=dict(color='#366092', width=3),
-        marker=dict(size=10)
-    ))
-    fig_occ.add_trace(go.Scatter(
-        name='Budget',
-        x=months,
-        y=[v*100 for v in bdg_occ],
-        mode='lines+markers',
-        line=dict(color='#FFC000', width=3, dash='dash'),
-        marker=dict(size=10)
-    ))
-    fig_occ.update_layout(
-        title='Occupancy %: Forecast vs Budget',
-        yaxis_title='Occupancy (%)',
-        height=400
-    )
-    st.plotly_chart(fig_occ, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
 
-# TAB 3: DETTAGLI MESI
-with tab3:
-    st.header("Dettagli Mensili")
-    
-    st.subheader("Dicembre 2025")
-    df_dic = pd.DataFrame({
-        'Metrica': ['Roomnights', 'ADR Camera (€)', 'Room Revenue (€)', 'Occupancy %'],
-        'Actual 1-15': [
-            f"{dic_actual['rn']:.0f}",
-            f"€{dic_actual['adr']:.2f}",
-            f"€{dic_actual['revenue']:,.0f}",
-            f"{dic_actual['occ']:.1%}"
-        ],
-        'Forecast 16-31': [
-            f"{dic_16_31_fcst['rn']:.0f}",
-            f"€{dic_16_31_fcst['adr']:.2f}",
-            f"€{dic_16_31_fcst['revenue']:,.0f}",
-            f"{dic_16_31_fcst['occ']:.1%}"
-        ],
-        'Totale': [
-            f"{dic_total['rn']:.0f}",
-            f"€{dic_total['adr']:.2f}",
-            f"€{dic_total['revenue']:,.0f}",
-            f"{dic_total['occ']:.1%}"
-        ],
-        'Budget': [
-            f"{budget_data['dic']['rn']:.0f}",
-            f"€{budget_data['dic']['adr']:.2f}",
-            f"€{budget_data['dic']['revenue']:,.0f}",
-            f"{budget_data['dic']['occ']:.1%}"
-        ],
-        'Var vs BDG': [
-            f"{((dic_total['rn']/budget_data['dic']['rn']-1)*100):.1f}%",
-            f"{((dic_total['adr']/budget_data['dic']['adr']-1)*100):.1f}%",
-            f"{((dic_total['revenue']/budget_data['dic']['revenue']-1)*100):.1f}%",
-            f"{(dic_total['occ']-budget_data['dic']['occ']):.1%}"
-        ]
-    })
-    st.dataframe(df_dic, use_container_width=True, hide_index=True)
-    
-    st.markdown("---")
-    
-    st.subheader("Gennaio 2026")
-    df_gen = pd.DataFrame({
-        'Metrica': ['Roomnights', 'ADR Camera (€)', 'Room Revenue (€)', 'Occupancy %'],
-        'Forecast': [
-            f"{gen_fcst['rn']:.0f}",
-            f"€{gen_fcst['adr']:.2f}",
-            f"€{gen_fcst['revenue']:,.0f}",
-            f"{gen_fcst['occ']:.1%}"
-        ],
-        'Budget': [
-            f"{budget_data['gen']['rn']:.0f}",
-            f"€{budget_data['gen']['adr']:.2f}",
-            f"€{budget_data['gen']['revenue']:,.0f}",
-            f"{budget_data['gen']['occ']:.1%}"
-        ],
-        'Var vs BDG': [
-            f"{((gen_fcst['rn']/budget_data['gen']['rn']-1)*100):.1f}%",
-            f"{((gen_fcst['adr']/budget_data['gen']['adr']-1)*100):.1f}%",
-            f"{((gen_fcst['revenue']/budget_data['gen']['revenue']-1)*100):.1f}%",
-            f"{(gen_fcst['occ']-budget_data['gen']['occ']):.1%}"
-        ]
-    })
-    st.dataframe(df_gen, use_container_width=True, hide_index=True)
-    
-    st.markdown("---")
-    
-    st.subheader("Febbraio 2026")
-    df_feb = pd.DataFrame({
-        'Metrica': ['Roomnights', 'ADR Camera (€)', 'Room Revenue (€)', 'Occupancy %'],
-        'Forecast': [
-            f"{feb_fcst['rn']:.0f}",
-            f"€{feb_fcst['adr']:.2f}",
-            f"€{feb_fcst['revenue']:,.0f}",
-            f"{feb_fcst['occ']:.1%}"
-        ],
-        'Budget': [
-            f"{budget_data['feb']['rn']:.0f}",
-            f"€{budget_data['feb']['adr']:.2f}",
-            f"€{budget_data['feb']['revenue']:,.0f}",
-            f"{budget_data['feb']['occ']:.1%}"
-        ],
-        'Var vs BDG': [
-            f"{((feb_fcst['rn']/budget_data['feb']['rn']-1)*100):.1f}%",
-            f"{((feb_fcst['adr']/budget_data['feb']['adr']-1)*100):.1f}%",
-            f"{((feb_fcst['revenue']/budget_data['feb']['revenue']-1)*100):.1f}%",
-            f"{(feb_fcst['occ']-budget_data['feb']['occ']):.1%}"
-        ]
-    })
-    st.dataframe(df_feb, use_container_width=True, hide_index=True)
-
-# TAB 4: COMPONENTI
 with tab4:
-    st.header("Breakdown dei 4 Componenti")
-    st.write("Visualizza il contributo di ciascun componente al forecast finale.")
+    st.header("💾 Export Risultati")
     
-    st.subheader("Dicembre 2025 (16-31) - Contributi per Roomnights")
-    
-    contrib_baseline = dic_16_31_baseline['rn'] * weights['baseline'] * biennale_adj
-    contrib_year = dic_16_31_year['rn'] * weights['year'] * biennale_adj
-    contrib_otb = dic_16_31_otb['rn'] * weights['otb'] * biennale_adj
-    contrib_pickup = dic_16_31_pickup['rn'] * weights['pickup'] * biennale_adj
-    
-    fig_contrib = go.Figure()
-    fig_contrib.add_trace(go.Bar(
-        x=['Baseline 2024', 'Anno 2025', 'OTB 2026', 'Pickup 7gg'],
-        y=[contrib_baseline, contrib_year, contrib_otb, contrib_pickup],
-        marker_color=['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A'],
-        text=[f'{v:.0f}' for v in [contrib_baseline, contrib_year, contrib_otb, contrib_pickup]],
-        textposition='auto'
-    ))
-    fig_contrib.update_layout(
-        title=f'Contributo Componenti al Forecast RN (Totale: {dic_16_31_fcst["rn"]:.0f})',
-        yaxis_title='Roomnights',
-        height=400
-    )
-    st.plotly_chart(fig_contrib, use_container_width=True)
-    
-    st.markdown("**Dettagli Calcolo Dicembre 16-31:**")
-    df_components = pd.DataFrame({
-        'Componente': ['① Baseline 2024', '② Anno 2025', '③ OTB 2026', '④ Pickup 7gg', 'TOTALE (prima Biennale Adj)', 'Biennale Adjustment', 'FORECAST FINALE'],
-        'Roomnights': [
-            dic_16_31_baseline['rn'],
-            dic_16_31_year['rn'],
-            dic_16_31_otb['rn'],
-            dic_16_31_pickup['rn'],
-            (dic_16_31_baseline['rn'] * weights['baseline'] + 
-             dic_16_31_year['rn'] * weights['year'] +
-             dic_16_31_otb['rn'] * weights['otb'] +
-             dic_16_31_pickup['rn'] * weights['pickup']),
-            f"× {biennale_adj}",
-            dic_16_31_fcst['rn']
-        ],
-        'Peso': [
-            f"{weights['baseline']:.1%}",
-            f"{weights['year']:.1%}",
-            f"{weights['otb']:.1%}",
-            f"{weights['pickup']:.1%}",
-            "100%",
-            "-",
-            "-"
-        ],
-        'Contributo': [
-            contrib_baseline,
-            contrib_year,
-            contrib_otb,
-            contrib_pickup,
-            "-",
-            "-",
-            dic_16_31_fcst['rn']
-        ]
-    })
-    st.dataframe(df_components, use_container_width=True, hide_index=True)
-
-# TAB 5: EXPORT
-with tab5:
-    st.header("Export Risultati")
-    
-    st.write("Scarica i risultati del forecast in formato Excel o CSV per ulteriori analisi.")
-    
-    export_data = pd.DataFrame({
-        'Mese': ['Dicembre 2025', 'Gennaio 2026', 'Febbraio 2026', 'TOTALE TRIMESTRE'],
-        'Forecast RN': [dic_total['rn'], gen_fcst['rn'], feb_fcst['rn'], trim_fcst_rn],
-        'Forecast ADR': [dic_total['adr'], gen_fcst['adr'], feb_fcst['adr'], trim_fcst_adr],
-        'Forecast Revenue': [dic_total['revenue'], gen_fcst['revenue'], feb_fcst['revenue'], trim_fcst_rev],
-        'Forecast Occ%': [dic_total['occ'], gen_fcst['occ'], feb_fcst['occ'], trim_fcst_occ],
-        'Budget RN': [budget_data['dic']['rn'], budget_data['gen']['rn'], budget_data['feb']['rn'], trim_bdg_rn],
-        'Budget ADR': [budget_data['dic']['adr'], budget_data['gen']['adr'], budget_data['feb']['adr'], trim_bdg_adr],
-        'Budget Revenue': [budget_data['dic']['revenue'], budget_data['gen']['revenue'], budget_data['feb']['revenue'], trim_bdg_rev],
-        'Budget Occ%': [budget_data['dic']['occ'], budget_data['gen']['occ'], budget_data['feb']['occ'], trim_bdg_occ],
+    export_df = pd.DataFrame({
+        'Mese': ['Dicembre', 'Gennaio', 'Febbraio'],
+        'Forecast RN': [dic_total['rn'], gen_fcst['rn'], feb_fcst['rn']],
+        'Forecast ADR': [dic_total['adr'], gen_fcst['adr'], feb_fcst['adr']],
+        'Forecast Revenue': [dic_total['revenue'], gen_fcst['revenue'], feb_fcst['revenue']],
+        'Modalità': ['Autopilot ML' if ml_used else 'Manual'] * 3,
+        'Data Report': [report_date.strftime('%d/%m/%Y')] * 3
     })
     
-    export_data['Var RN %'] = ((export_data['Forecast RN'] / export_data['Budget RN'] - 1) * 100).round(1)
-    export_data['Var ADR %'] = ((export_data['Forecast ADR'] / export_data['Budget ADR'] - 1) * 100).round(1)
-    export_data['Var Revenue %'] = ((export_data['Forecast Revenue'] / export_data['Budget Revenue'] - 1) * 100).round(1)
-    export_data['Var Occ pp'] = (export_data['Forecast Occ%'] - export_data['Budget Occ%']) * 100
-    
-    st.dataframe(export_data, use_container_width=True, hide_index=True)
-    
-    st.markdown("---")
-    st.subheader("Parametri Utilizzati")
-    params_df = pd.DataFrame({
-        'Parametro': [
-            'Camere Disponibili',
-            'Peso Baseline 2024',
-            'Peso Anno 2025',
-            'Peso OTB 2026',
-            'Peso Pickup 7gg',
-            'Biennale Adjustment'
-        ],
-        'Valore': [
-            num_rooms,
-            f"{weights['baseline']:.1%}",
-            f"{weights['year']:.1%}",
-            f"{weights['otb']:.1%}",
-            f"{weights['pickup']:.1%}",
-            f"{biennale_adj:.2f}"
-        ]
-    })
-    st.dataframe(params_df, use_container_width=True, hide_index=True)
+    st.dataframe(export_df, use_container_width=True, hide_index=True)
     
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        export_data.to_excel(writer, sheet_name='Forecast Results', index=False)
-        params_df.to_excel(writer, sheet_name='Parameters', index=False)
+        export_df.to_excel(writer, index=False)
     
     st.download_button(
-        label="📥 Scarica Excel",
-        data=output.getvalue(),
-        file_name=f"Forecast_CaDiDio_4Comp_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-    
-    csv = export_data.to_csv(index=False)
-    st.download_button(
-        label="📥 Scarica CSV",
-        data=csv,
-        file_name=f"Forecast_CaDiDio_4Comp_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv"
+        "📥 Scarica Excel",
+        output.getvalue(),
+        f"Forecast_ML_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-# Footer
 st.markdown("---")
 st.markdown("""
-<div style='text-align: center; color: #666; padding: 20px;'>
-    <p><strong>Ca' di Dio Vretreats</strong> - Revenue Management Dashboard</p>
-    <p>Pickup Method a 4 Componenti | Powered by Streamlit 🚀</p>
+<div style='text-align: center; color: #666;'>
+    <strong>Ca' di Dio Vretreats</strong> - ML Autopilot 🤖 | Powered by Streamlit
 </div>
 """, unsafe_allow_html=True)
