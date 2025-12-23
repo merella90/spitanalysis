@@ -453,7 +453,89 @@ else:  # Autopilot
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Biennale Adjustment")
-biennale_adj = st.sidebar.number_input("Fattore", 1.00, 1.50, 1.10, 0.01)
+
+biennale_mode = st.sidebar.radio(
+    "Modalità:",
+    ["Manual", "Auto (Grid Search ML)"],
+    help="Manual: imposti tu | Auto: calcolo ottimale da dati storici Arte vs Architettura"
+)
+
+if biennale_mode == "Manual":
+    biennale_adj = st.sidebar.number_input(
+        "Fattore Moltiplicativo",
+        min_value=1.00, max_value=1.50, value=1.10, step=0.01,
+        help="Adjustment manuale per Biennale Arte 2026"
+    )
+    ml_biennale_used = False
+    
+else:  # Auto Grid Search
+    with st.spinner("🔄 Calcolo automatico Biennale Adjustment..."):
+        
+        # Dati per calcolo
+        # Baseline 2023-24 = Biennale ARTE (target da raggiungere)
+        # Year 2024-25 = Biennale ARCHITETTURA (punto di partenza)
+        
+        # Gennaio come periodo di validazione (più stabile di dicembre/febbraio)
+        baseline_arte_gen = {
+            'rn': data['baseline_2324'].iloc[32:63]['Room nights'].sum(),
+            'adr': data['baseline_2324'].iloc[32:63]['ADR Cam'].mean()
+        }
+        
+        year_arch_gen = {
+            'rn': data['year_2425'].iloc[31:62]['Room nights'].sum(),
+            'adr': data['year_2425'].iloc[31:62]['ADR Cam'].mean()
+        }
+        
+        # Grid search: testa fattori da 1.00 a 1.30
+        best_factor = 1.10
+        best_mape_combined = float('inf')
+        
+        results = []
+        
+        for factor in np.arange(1.00, 1.31, 0.02):  # Step 0.02 per velocità
+            # Forecast: Architettura × Factor = Arte previsto
+            forecast_rn = year_arch_gen['rn'] * factor
+            forecast_adr = year_arch_gen['adr'] * factor
+            
+            # MAPE vs Arte reale
+            mape_rn = abs(forecast_rn - baseline_arte_gen['rn']) / baseline_arte_gen['rn'] * 100
+            mape_adr = abs(forecast_adr - baseline_arte_gen['adr']) / baseline_arte_gen['adr'] * 100
+            
+            # Combined MAPE (peso uguale)
+            combined_mape = (mape_rn + mape_adr) / 2
+            
+            results.append({
+                'factor': factor,
+                'mape_rn': mape_rn,
+                'mape_adr': mape_adr,
+                'combined_mape': combined_mape
+            })
+            
+            if combined_mape < best_mape_combined:
+                best_mape_combined = combined_mape
+                best_factor = factor
+                best_mape_rn = mape_rn
+                best_mape_adr = mape_adr
+        
+        biennale_adj = best_factor
+        ml_biennale_used = True
+        
+        # Mostra risultati
+        st.sidebar.success(f"✅ **Fattore Ottimale: {biennale_adj:.2f}**")
+        
+        with st.sidebar.expander("📊 Dettagli Calcolo"):
+            st.write(f"**Validation: Gennaio**")
+            st.write(f"Arte 2024 (target): {baseline_arte_gen['rn']:.0f} RN, €{baseline_arte_gen['adr']:.2f} ADR")
+            st.write(f"Architettura 2025: {year_arch_gen['rn']:.0f} RN, €{year_arch_gen['adr']:.2f} ADR")
+            st.write(f"")
+            st.write(f"**Performance con fattore {biennale_adj:.2f}:**")
+            st.write(f"MAPE RN: {best_mape_rn:.2f}%")
+            st.write(f"MAPE ADR: {best_mape_adr:.2f}%")
+            st.write(f"MAPE Combined: {best_mape_combined:.2f}%")
+            st.write(f"")
+            st.write(f"**Interpretazione:**")
+            diff_pct = (biennale_adj - 1) * 100
+            st.write(f"Biennale Arte storicamente supera Architettura di **+{diff_pct:.1f}%**")
 
 # ============================================================================
 # CALCOLI FORECAST CON DATA DINAMICA
@@ -694,6 +776,34 @@ with tab2:
         
         *MAPE < 10%: Eccellente | 10-20%: Buono | >20%: Migliorabile*
         """)
+        
+        # Biennale Adjustment info
+        st.markdown("---")
+        st.subheader("🎨 Biennale Adjustment")
+        
+        if ml_biennale_used:
+            st.success(f"✅ Fattore ottimizzato automaticamente: **{biennale_adj:.2f}** (+{(biennale_adj-1)*100:.1f}%)")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Biennale Arte", f"{biennale_adj:.2f}×", "Ottimizzato")
+            with col2:
+                uplift_pct = (biennale_adj - 1) * 100
+                st.metric("Uplift vs Architettura", f"+{uplift_pct:.1f}%", "Storico")
+            
+            st.info("""
+            **Come funziona:**
+            - Confronta Biennale Arte 2023-24 vs Architettura 2024-25
+            - Grid search trova il fattore che minimizza MAPE
+            - Applica lo stesso uplift per prevedere Arte 2026
+            
+            **Interpretazione:**
+            Storicamente, durante la Biennale Arte, Ca' di Dio registra performance superiori 
+            rispetto alla Biennale Architettura. Il fattore ottimizzato cattura questo pattern.
+            """)
+        else:
+            st.info(f"ℹ️ Biennale Adjustment manuale: **{biennale_adj:.2f}** (+{(biennale_adj-1)*100:.1f}%)")
+            st.markdown("Passa a modalità **Auto (Grid Search ML)** per ottimizzazione automatica")
         
     else:
         st.info("ℹ️ Modalità Manual attiva - Passa ad Autopilot per ottimizzazione ML")
