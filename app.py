@@ -139,13 +139,24 @@ def identify_file_type(file):
     if any(pattern in name for pattern in otb_patterns):
         return 'otb_2026'
     
-    # Pickup 7gg
+    # Pickup RN (roomnights) - File con vs 7gg
+    # Cerca prima pattern specifici per RN
+    if ('145722' in name or 
+        ('pickup' in name and ('rn' in name or 'roomnight' in name))):
+        return 'pickup_rn'
+    
+    # Pickup ADR - File con ADR Room  
+    # Cerca prima pattern specifici per ADR
+    if ('124705' in name or 
+        ('pickup' in name and 'adr' in name)):
+        return 'pickup_adr'
+    
+    # Pickup generico - File unificato o da determinare dal contenuto
     pickup_patterns = [
-        'pickup', '7gg', '7 gg', 'seven', '144853', 
-        '145722', 'booking velocity', 'velocity'
+        'pickup', '7gg', '7 gg', 'seven', 'booking velocity', 'velocity', 'unified'
     ]
     if any(pattern in name for pattern in pickup_patterns):
-        return 'pickup'
+        return 'pickup_generic'
     
     # Budget
     budget_patterns = [
@@ -166,8 +177,32 @@ def load_data_from_uploads(files_dict):
             data[key] = df[df['Giorno'].str.contains('/', na=False) & 
                           ~df['Giorno'].str.contains('Filtri', na=False)].copy()
         
-        df = pd.read_excel(files_dict['pickup'])
-        data['pickup'] = df[df['Soggiorno'].notna()].copy()
+        # Gestione Pickup - supporta sia file unificato che separati
+        if 'pickup_generic' in files_dict:
+            # File unificato - usa direttamente
+            df = pd.read_excel(files_dict['pickup_generic'])
+            data['pickup'] = df[df['Soggiorno'].notna()].copy()
+            
+        elif 'pickup_rn' in files_dict and 'pickup_adr' in files_dict:
+            # File separati - merge automatico
+            df_rn = pd.read_excel(files_dict['pickup_rn'])
+            df_adr = pd.read_excel(files_dict['pickup_adr'])
+            
+            # Pulisci dataframe
+            df_rn = df_rn[df_rn['Soggiorno'].notna()].copy()
+            df_adr = df_adr[df_adr['Soggiorno'].notna()].copy()
+            
+            # Seleziona colonne rilevanti
+            df_rn_clean = df_rn[['Soggiorno', 'vs 7gg']].copy()
+            df_adr_clean = df_adr[['Soggiorno', 'ADR Room']].copy()
+            
+            # Merge automatico
+            df_merged = pd.merge(df_rn_clean, df_adr_clean, on='Soggiorno', how='inner')
+            data['pickup'] = df_merged
+            
+            st.sidebar.success("🔄 Pickup RN + ADR uniti automaticamente!")
+        
+        # Budget
         data['budget'] = pd.read_excel(files_dict['budget'])
         
         return data
@@ -186,7 +221,8 @@ def calc_pickup_adr(df_slice):
 # ============================================================================
 
 st.sidebar.header("📁 Carica Dati")
-uploaded_files = st.sidebar.file_uploader("Seleziona 5 file Excel", type=['xlsx'], accept_multiple_files=True)
+st.sidebar.markdown("Carica **5 file** (con pickup unificato) oppure **6 file** (pickup RN e ADR separati)")
+uploaded_files = st.sidebar.file_uploader("Seleziona file Excel", type=['xlsx'], accept_multiple_files=True)
 
 files_dict = {}
 if uploaded_files:
@@ -201,30 +237,96 @@ if uploaded_files:
                 'baseline_2324': "Baseline 2023-24",
                 'year_2425': "Year 2024-25",
                 'otb_2026': "OTB 2026",
-                'pickup': "Pickup 7gg",
+                'pickup_rn': "Pickup RN (roomnights)",
+                'pickup_adr': "Pickup ADR (prezzi)",
+                'pickup_generic': "Pickup 7gg (unificato)",
                 'budget': "Budget"
             }
-            st.sidebar.markdown(f"✅ **{labels[file_type]}**")
+            label = labels.get(file_type, file_type)
+            st.sidebar.markdown(f"✅ **{label}**")
+        else:
+            st.sidebar.warning(f"⚠️ Non riconosciuto: {file.name}")
     
-    required = ['baseline_2324', 'year_2425', 'otb_2026', 'pickup', 'budget']
-    missing = [f for f in required if f not in files_dict]
+    # Check required files - supporta sia 5 che 6 file
+    base_required = ['baseline_2324', 'year_2425', 'otb_2026', 'budget']
+    base_missing = [f for f in base_required if f not in files_dict]
     
-    if missing:
-        st.sidebar.error(f"⚠️ Mancano {len(missing)} file")
+    # Per pickup: accetta O file unificato O entrambi i file separati
+    has_unified_pickup = 'pickup_generic' in files_dict
+    has_separate_pickups = 'pickup_rn' in files_dict and 'pickup_adr' in files_dict
+    has_pickup = has_unified_pickup or has_separate_pickups
+    
+    if base_missing or not has_pickup:
+        missing_msg = []
+        if base_missing:
+            missing_msg.extend(base_missing)
+        if not has_pickup:
+            missing_msg.append("pickup (RN+ADR unificato) O (pickup_rn E pickup_adr)")
+        
+        st.sidebar.error(f"⚠️ Mancano: {', '.join(missing_msg)}")
+        st.warning("⚠️ Carica tutti i file necessari")
+        st.info("""
+        **File necessari:**
+        1. Baseline 2023-24
+        2. Year 2024-25
+        3. OTB 2026
+        4. Budget
+        5. **Pickup:** UNA di queste opzioni:
+           - File unificato (con vs 7gg E ADR Room)
+           - File RN (con vs 7gg) + File ADR (con ADR Room) separati
+        """)
         st.stop()
     else:
-        st.sidebar.success("✅ Tutti i file caricati!")
+        total_files = len(files_dict)
+        st.sidebar.success(f"✅ Tutti i file caricati! ({total_files} file)")
+        
+        # Mostra info su pickup
+        if has_unified_pickup:
+            st.sidebar.info("📊 Pickup: File unificato rilevato")
+        elif has_separate_pickups:
+            st.sidebar.info("📊 Pickup: File RN + ADR separati (merge automatico)")
 else:
-    st.warning("⚠️ Carica 5 file Excel")
+    st.warning("⚠️ Carica i file Excel necessari")
+    st.info("""
+    **Opzione A (5 file):**
+    1. 2023-24.xlsx (Baseline)
+    2. 2024-25.xlsx (Year)
+    3. otb.xlsx (OTB)
+    4. pickup.xlsx (unificato con vs 7gg + ADR Room)
+    5. budget.xlsx
+    
+    **Opzione B (6 file):**
+    1. 2023-24.xlsx (Baseline)
+    2. 2024-25.xlsx (Year)
+    3. otb.xlsx (OTB)
+    4. pickup_rn.xlsx (con vs 7gg)
+    5. pickup_adr.xlsx (con ADR Room)
+    6. budget.xlsx
+    """)
     st.stop()
 
 data = load_data_from_uploads(files_dict)
 if data is None:
     st.stop()
 
-if 'ADR Room' not in data['pickup'].columns:
-    st.error("❌ File Pickup deve avere colonna 'ADR Room'")
+# Verifica che pickup abbia le colonne necessarie
+required_pickup_cols = ['ADR Room', 'vs 7gg']
+missing_cols = [col for col in required_pickup_cols if col not in data['pickup'].columns]
+
+if missing_cols:
+    st.error(f"❌ File Pickup mancano colonne: {', '.join(missing_cols)}")
+    st.info("""
+    **Il file pickup deve avere:**
+    - Colonna `ADR Room` (ADR medio prenotazioni)
+    - Colonna `vs 7gg` (roomnights pickup)
+    
+    **Soluzioni:**
+    1. Usa file unificato con entrambe le colonne
+    2. Oppure carica 2 file separati (RN + ADR) che verranno uniti automaticamente
+    """)
     st.stop()
+else:
+    st.sidebar.success("✅ File Pickup validato correttamente!")
 
 st.sidebar.markdown("---")
 
