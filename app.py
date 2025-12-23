@@ -87,22 +87,33 @@ def optimize_weights_grid_search(baseline, year_prev, otb, actual_rn, actual_adr
     
     return best_weights, best_mape_rn, best_mape_adr
 
-def calculate_forecast_simple(baseline, year_prev, otb, pickup, weights, biennale_adj, num_rooms):
-    """Forecast base a 4 componenti"""
+def calculate_forecast_simple(baseline, year_prev, otb, pickup, weights, biennale_adj, num_rooms, year_ago=None):
+    """Forecast con 4 o 5 componenti (year-ago opzionale)"""
     
+    # Roomnights
     rn = (
         baseline['rn'] * weights['baseline'] +
         year_prev['rn'] * weights['year'] +
         otb['rn'] * weights['otb'] +
         pickup['rn'] * weights['pickup']
-    ) * biennale_adj
+    )
     
+    # ADR  
     adr = (
         baseline['adr'] * weights['baseline'] +
         year_prev['adr'] * weights['year'] +
         otb['adr'] * weights['otb'] +
         pickup['adr'] * weights['pickup']
-    ) * biennale_adj
+    )
+    
+    # Year-Ago (5° componente opzionale)
+    if year_ago is not None and 'year_ago' in weights:
+        rn += year_ago['rn'] * weights['year_ago']
+        adr += year_ago['adr'] * weights['year_ago']
+    
+    # Applica Biennale Adjustment
+    rn *= biennale_adj
+    adr *= biennale_adj
     
     return {
         'rn': rn,
@@ -131,13 +142,21 @@ def identify_file_type(file):
     if any(pattern in name for pattern in year_patterns):
         return 'year_2425'
     
-    # OTB 2026
+    # OTB 2026 (current)
     otb_patterns = [
         'otb', '2026', '145405', 'on the books', 
         'onthebooks', 'prenotazioni'
     ]
-    if any(pattern in name for pattern in otb_patterns):
+    # Escludi year-ago patterns
+    if any(pattern in name for pattern in otb_patterns) and 'yearago' not in name and 'year-ago' not in name and 'year_ago' not in name:
         return 'otb_2026'
+    
+    # OTB Year-Ago (previous year same date)
+    otb_yearago_patterns = [
+        'yearago', 'year-ago', 'year_ago', '160234'
+    ]
+    if any(pattern in name for pattern in otb_yearago_patterns):
+        return 'otb_yearago'
     
     # Pickup RN (roomnights) - File con vs 7gg
     # Cerca prima pattern specifici per RN
@@ -176,6 +195,13 @@ def load_data_from_uploads(files_dict):
             df = pd.read_excel(files_dict[key])
             data[key] = df[df['Giorno'].str.contains('/', na=False) & 
                           ~df['Giorno'].str.contains('Filtri', na=False)].copy()
+        
+        # OTB Year-Ago (opzionale)
+        if 'otb_yearago' in files_dict:
+            df = pd.read_excel(files_dict['otb_yearago'])
+            data['otb_yearago'] = df[df['Giorno'].str.contains('/', na=False) & 
+                                    ~df['Giorno'].str.contains('Filtri', na=False)].copy()
+            st.sidebar.success("✅ OTB Year-Ago caricato - Modello a 5 componenti attivo!")
         
         # Gestione Pickup - supporta sia file unificato che separati
         if 'pickup_generic' in files_dict:
@@ -221,7 +247,10 @@ def calc_pickup_adr(df_slice):
 # ============================================================================
 
 st.sidebar.header("📁 Carica Dati")
-st.sidebar.markdown("Carica **5 file** (con pickup unificato) oppure **6 file** (pickup RN e ADR separati)")
+st.sidebar.markdown("Carica **5-7 file**:")
+st.sidebar.markdown("• Base: Baseline, Year, OTB, Budget")  
+st.sidebar.markdown("• Pickup: unificato O (RN + ADR) separati")
+st.sidebar.markdown("• **Opzionale**: OTB Year-Ago per YoY comparison")
 uploaded_files = st.sidebar.file_uploader("Seleziona file Excel", type=['xlsx'], accept_multiple_files=True)
 
 files_dict = {}
@@ -236,7 +265,8 @@ if uploaded_files:
             labels = {
                 'baseline_2324': "Baseline 2023-24",
                 'year_2425': "Year 2024-25",
-                'otb_2026': "OTB 2026",
+                'otb_2026': "OTB 2026 (current)",
+                'otb_yearago': "OTB Year-Ago (24/12/2024)",
                 'pickup_rn': "Pickup RN (roomnights)",
                 'pickup_adr': "Pickup ADR (prezzi)",
                 'pickup_generic': "Pickup 7gg (unificato)",
@@ -381,23 +411,47 @@ mode = st.sidebar.radio(
 
 if mode == "Manual":
     st.sidebar.subheader("Pesi Manuali")
-    peso_baseline = st.sidebar.slider("① Baseline 2024", 0, 100, 35, 5)
-    peso_year = st.sidebar.slider("② Anno 2025", 0, 100, 25, 5)
-    peso_otb = st.sidebar.slider("③ OTB 2026", 0, 100, 25, 5)
-    peso_pickup = st.sidebar.slider("④ Pickup 7gg", 0, 100, 15, 5)
     
-    peso_totale = peso_baseline + peso_year + peso_otb + peso_pickup
+    # Check se year-ago è disponibile
+    has_yearago = 'otb_yearago' in data
+    
+    if has_yearago:
+        st.sidebar.info("🎯 Modello a 5 componenti (con Year-Ago)")
+        peso_baseline = st.sidebar.slider("① Baseline 2024", 0, 100, 30, 5)
+        peso_year = st.sidebar.slider("② Anno 2025", 0, 100, 20, 5)
+        peso_otb = st.sidebar.slider("③ OTB 2026", 0, 100, 25, 5)
+        peso_yearago = st.sidebar.slider("④ OTB Year-Ago", 0, 100, 15, 5)
+        peso_pickup = st.sidebar.slider("⑤ Pickup 7gg", 0, 100, 10, 5)
+        
+        peso_totale = peso_baseline + peso_year + peso_otb + peso_yearago + peso_pickup
+        
+        weights = {
+            'baseline': peso_baseline / 100,
+            'year': peso_year / 100,
+            'otb': peso_otb / 100,
+            'year_ago': peso_yearago / 100,
+            'pickup': peso_pickup / 100
+        }
+    else:
+        st.sidebar.info("📊 Modello a 4 componenti")
+        peso_baseline = st.sidebar.slider("① Baseline 2024", 0, 100, 35, 5)
+        peso_year = st.sidebar.slider("② Anno 2025", 0, 100, 25, 5)
+        peso_otb = st.sidebar.slider("③ OTB 2026", 0, 100, 25, 5)
+        peso_pickup = st.sidebar.slider("④ Pickup 7gg", 0, 100, 15, 5)
+        
+        peso_totale = peso_baseline + peso_year + peso_otb + peso_pickup
+        
+        weights = {
+            'baseline': peso_baseline / 100,
+            'year': peso_year / 100,
+            'otb': peso_otb / 100,
+            'pickup': peso_pickup / 100
+        }
+    
     if peso_totale != 100:
         st.sidebar.error(f"⚠️ TOTALE: {peso_totale}%")
     else:
         st.sidebar.success(f"✅ TOTALE: {peso_totale}%")
-    
-    weights = {
-        'baseline': peso_baseline / 100,
-        'year': peso_year / 100,
-        'otb': peso_otb / 100,
-        'pickup': peso_pickup / 100
-    }
     
     ml_used = False
     
